@@ -1,0 +1,5 @@
+/target
+policy/*
+blockfrost.toml
+matx.raw
+metadata.json
