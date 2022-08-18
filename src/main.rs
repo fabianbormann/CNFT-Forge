@@ -114,7 +114,6 @@ async fn build_nft(metadata: Json<Metadata>) -> (Status, Value) {
             let regex = Regex::new(r"/d+").unwrap();
             let lovelace_match = regex.find(transaction_requirements.as_str()).unwrap();
             println!("{}", lovelace_match.as_str());
-
             // TODO: update output
         }
 
