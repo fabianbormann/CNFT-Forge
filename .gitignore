@@ -1,0 +1,8 @@
+/target
+policy/*
+blockfrost.toml
+matx.raw
+matx.signed
+metadata.json
+payment.skey
+payment.vkey
