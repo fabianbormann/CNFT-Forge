@@ -6,7 +6,7 @@ use rocket::serde::json::{json, Value};
 use rocket::serde::{json::Json, Deserialize, Serialize};
 use std::fs::{create_dir, read_to_string, remove_dir_all, remove_file, write, File};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Output, Stdio};
 extern crate hex;
 
 #[get("/<path..>")]
@@ -54,7 +54,7 @@ async fn build_nft(metadata: Json<Metadata>) -> (Status, Value) {
     let slot = latest_blocks.unwrap().slot.unwrap() + 10000;
 
     let address_utxos = utxos.unwrap();
-    let address_utxo: &AddressUtxo = address_utxos.last().unwrap();
+    let address_utxo: &AddressUtxo = address_utxos.first().unwrap();
     let tx_hash = &address_utxo.tx_hash;
     let tx_ix = address_utxo.output_index.to_string();
 
@@ -95,7 +95,7 @@ async fn build_nft(metadata: Json<Metadata>) -> (Status, Value) {
 
         let output = 1400000;
         let policy_script_path = &format!("{}/policy/policy.script", env!("CARGO_MANIFEST_DIR"));
-        let transaction_requirements = build_transaction(
+        let build_transaction_output = build_transaction(
             tx_hash,
             tx_ix.as_str(),
             metadata.payment_address.as_str(),
@@ -108,6 +108,9 @@ async fn build_nft(metadata: Json<Metadata>) -> (Status, Value) {
         )
         .await;
 
+        let transaction_requirements = String::from_utf8(build_transaction_output.stdout).unwrap();
+        let build_transaction_stderr = String::from_utf8(build_transaction_output.stderr).unwrap();
+
         if transaction_requirements.starts_with("Minimum required UTxO") {
             println!("{}", transaction_requirements);
 
@@ -119,14 +122,16 @@ async fn build_nft(metadata: Json<Metadata>) -> (Status, Value) {
 
         if transaction_requirements.starts_with("Estimated transaction fee") {
             println!("{}", transaction_requirements);
-            let sign_and_submit_status = sign_and_submit_transaction().await;
+            let (sign_and_submit_status, sign_and_submit_message) =
+                sign_and_submit_transaction().await;
 
             if sign_and_submit_status.success() {
                 (
                     Status::Ok,
                     json!({
                         "tokenname": metadata.name,
-                        "policyId": policy_id
+                        "policyId": policy_id,
+                        "submitOutput": sign_and_submit_message
                     }),
                 )
             } else {
@@ -139,7 +144,10 @@ async fn build_nft(metadata: Json<Metadata>) -> (Status, Value) {
             println!("{}", transaction_requirements);
             (
                 Status::InternalServerError,
-                json!({"error": "Could not estimate the required lovelace output"}),
+                json!({
+                    "error": "Could not estimate the required lovelace output",
+                    "message": build_transaction_stderr
+                }),
             )
         }
     } else {
@@ -237,10 +245,10 @@ async fn build_transaction(
     token_name: &str,
     policy_script_path: &str,
     slot: i128,
-) -> String {
+) -> Output {
     let out_file_path = &format!("{}/matx.raw", env!("CARGO_MANIFEST_DIR"));
 
-    let output = Command::new("cardano-cli")
+    Command::new("cardano-cli")
         .args([
             "transaction",
             "build",
@@ -271,18 +279,16 @@ async fn build_transaction(
         ])
         .stdout(Stdio::piped())
         .output()
-        .expect("failed to execute transaction build process");
-
-    String::from_utf8(output.stdout).unwrap()
+        .expect("failed to execute transaction build process")
 }
 
-async fn sign_and_submit_transaction() -> ExitStatus {
+async fn sign_and_submit_transaction() -> (ExitStatus, String) {
     let payment_skey_file_path = &format!("{}/payment.skey", env!("CARGO_MANIFEST_DIR"));
     let policy_skey_file_path = &format!("{}/policy/policy.skey", env!("CARGO_MANIFEST_DIR"));
     let matx_file_path = &format!("{}/matx.raw", env!("CARGO_MANIFEST_DIR"));
     let matx_signed_file_path = &format!("{}/matx.signed", env!("CARGO_MANIFEST_DIR"));
 
-    let signing_process_status = Command::new("cardano-cli")
+    let signing_result = Command::new("cardano-cli")
         .args([
             "transaction",
             "sign",
@@ -297,11 +303,12 @@ async fn sign_and_submit_transaction() -> ExitStatus {
             "--out-file",
             matx_signed_file_path,
         ])
-        .status()
+        .stdout(Stdio::piped())
+        .output()
         .expect("failed to execute transaction signing process");
 
-    if signing_process_status.success() {
-        Command::new("cardano-cli")
+    if signing_result.status.success() {
+        let submit_result = Command::new("cardano-cli")
             .args([
                 "transaction",
                 "submit",
@@ -310,10 +317,19 @@ async fn sign_and_submit_transaction() -> ExitStatus {
                 "--testnet-magic",
                 "1097911063",
             ])
-            .status()
-            .expect("failed to execute transaction signing process")
+            .stdout(Stdio::piped())
+            .output()
+            .expect("failed to execute transaction signing process");
+
+        (
+            submit_result.status,
+            String::from_utf8(submit_result.stdout).unwrap(),
+        )
     } else {
-        return signing_process_status;
+        return (
+            signing_result.status,
+            String::from_utf8(signing_result.stdout).unwrap(),
+        );
     }
 }
 
